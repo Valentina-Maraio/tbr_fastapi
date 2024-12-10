@@ -60,8 +60,24 @@ def read_root():
 
 # Get all books
 @app.get("/books", response_model=List[Book])
-def get_books(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    books = db.execute(select(BookModel).offset(skip).limit(limit)).scalars().all()
+def get_books(
+    title: Optional[str] = Query(None),
+    author: Optional[str] = Query(None),
+    read: Optional[bool] = Query(None),
+    skip: int = 0,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+):
+    query = select(BookModel)
+
+    if title:
+        query = query.filter(BookModel.title.ilike(f"%{title}%"))
+    if author:
+        query = query.filter(BookModel.author.ilike(f"%{author}%"))
+    if read is not None:
+        query = query.filter(BookModel.read == read)
+
+    books = db.execute(query.offset(skip).limit(limit)).scalars().all()
     return books
 
 # Add a new book
