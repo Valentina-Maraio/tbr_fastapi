@@ -1,73 +1,104 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Depends
 from pydantic import BaseModel
 from typing import List, Optional
+from sqlalchemy import create_engine, Column, Integer, String, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.future import select
 
-# Initialize the FastAPI app
+# Initialize FastAPI
 app = FastAPI()
 
-# Data model for a book
-class Book(BaseModel):
-	id: int
-	title: str
-	author: str
-	comment: Optional[str] = None
-	read: bool = False
-	
-# In-memory storage for books
-books: List[Book] = []
+# SQLAlchemy setup
+DATABASE_URL = "sqlite:///./books.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
+# Database model
+class BookModel(Base):
+    __tablename__ = "books"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, index=True)
+    author = Column(String)
+    comment = Column(String, nullable=True)
+    read = Column(Boolean, default=False)
+
+# Pydantic model for validation
+class BookCreate(BaseModel):
+    title: str
+    author: str
+    comment: Optional[str] = None
+    read: bool = False
+
+class Book(BaseModel):
+    id: int
+    title: str
+    author: str
+    comment: Optional[str]
+    read: bool
+
+    class Config:
+        orm_mode = True
+
+# Create database tables
+Base.metadata.create_all(bind=engine)
+
+# Dependency to get DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Root endpoint
 @app.get("/")
 def read_root():
-	'''
-	Root endpoint to confirm the API is running.
-	'''
-	return {"message": "Welcome to the Book Collection API!"}
+    return {"message": "Welcome to the Book Collection API!"}
 
-@app.get('/books', response_model=List[Book])
-def get_books():
-	'''
-	Retrieve all books in the collection
-	'''
-	return books
+# Get all books
+@app.get("/books", response_model=List[Book])
+def get_books(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    books = db.execute(select(BookModel).offset(skip).limit(limit)).scalars().all()
+    return books
 
-@app.get("/books/{book_id}", response_model=Book)
-def get_book(book_id: int):
-	'''
-	Retrieve a specific book by ID.
-	'''
-	book = next((book for book in books if book.id == book_id), None)
-	if not book:
-		raise HTTPException(status_code=404, detail="Book not found")
-	return book
-
+# Add a new book
 @app.post("/books", response_model=Book)
-def create_book(book: Book):
-	'''
-	Add a new book to the collection
-	'''
-	if any(b.id == book.id for b in books):
-		raise HTTPException(status_code=400, detail="Book ID already exists")
-	books.append(book)
-	return book
+def create_book(book: BookCreate, db: Session = Depends(get_db)):
+    new_book = BookModel(**book.dict())
+    db.add(new_book)
+    db.commit()
+    db.refresh(new_book)
+    return new_book
 
+# Get a specific book by ID
+@app.get("/books/{book_id}", response_model=Book)
+def get_book(book_id: int, db: Session = Depends(get_db)):
+    book = db.get(BookModel, book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return book
+
+# Update a book
 @app.put("/books/{book_id}", response_model=Book)
-def update_book(book_id: int, updated_book: Book):
-	'''
-	Update details of an existing book
-	'''
-	book_index = next((index for index, book in enumerate(books) if book.id == book_id), None)
-	if book_index is None:
-		raise HTTPException(status_code=404, detail="Book not found")
-	books[book_index] = updated_book
-	return updated_book
+def update_book(book_id: int, updated_book: BookCreate, db: Session = Depends(get_db)):
+    book = db.get(BookModel, book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    for key, value in updated_book.dict().items():
+        setattr(book, key, value)
+    db.commit()
+    db.refresh(book)
+    return book
 
+# Delete a book
 @app.delete("/books/{book_id}", response_model=Book)
-def delete_book(book_id: int):
-	'''
-	Remove a book from the collection by ID
-	'''
-	book_index = next((index for index, book in enumerate(books) if book.id == book_id), None)
-	if book_index is None:
-		raise HTTPException(status_code=404, detail="Book not found")
-	deleted_book = books.pop(book_index)
-	return deleted_book
+def delete_book(book_id: int, db: Session = Depends(get_db)):
+    book = db.get(BookModel, book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    db.delete(book)
+    db.commit()
+    return book
